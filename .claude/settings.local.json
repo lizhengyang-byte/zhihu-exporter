@@ -12,7 +12,9 @@
       "Bash(node --check main.js)",
       "Bash(git commit -m 'Merge two scripts into one unified exporter with tabbed UI *)",
       "Bash(git commit -m 'Fix: handle non-string item.content \\(array-type content from pins\\) *)",
-      "Bash(git commit -m 'Fix fav export: better title extraction + multi-strategy content fetching + debug logging *)"
+      "Bash(git commit -m 'Fix fav export: better title extraction + multi-strategy content fetching + debug logging *)",
+      "Bash(git rm *)",
+      "Bash(git commit *)"
     ]
   }
 }

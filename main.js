@@ -945,8 +945,9 @@
             let offset = 0;
             while (true) {
                 if (this.aborted) break;
+                // 收藏夹 API 本身不返回完整 content，只取元数据用于后续独立获取
                 const params = new URLSearchParams({
-                    include: 'data[*].type,content,voteup_count,created_time,updated_time,comment_count,question.title,question.id,title,url,author.name,author.url_token',
+                    include: 'data[*].type,question.id,question.title,title,url,author.name,author.url_token,id,voteup_count,created_time,updated_time,comment_count',
                     limit: '20', offset: String(offset),
                 });
                 const resp = await fetch('/api/v4/collections/' + collectionId + '/items?' + params.toString());
@@ -964,69 +965,76 @@
             return items;
         },
 
+        /** 从 URL 中提取回答或文章 ID（比依赖 API 字段更可靠） */
+        extractIdsFromUrl(item) {
+            const result = { qid: null, aid: null, articleId: null };
+            if (!item.url) return result;
+            const url = item.url.startsWith('http') ? item.url : 'https://www.zhihu.com' + item.url;
+            // /question/{qid}/answer/{aid}
+            const am = url.match(/\/question\/(\d+)\/answer\/(\d+)/);
+            if (am) { result.qid = am[1]; result.aid = am[2]; return result; }
+            // /p/{articleId} (专栏文章)
+            const pm = url.match(/\/p\/(\d+)/);
+            if (pm) { result.articleId = pm[1]; return result; }
+            return result;
+        },
+
         async fetchItemFullContent(entry) {
             const item = entry.item;
             if (!item) return;
-            const type = item.type || '';
-            try {
-                let fetched = false;
 
-                // ---- 回答：尝试多个可能的 ID 字段 ----
-                if ((type === 'answer' || !type) && item.question?.id) {
-                    const qid = item.question.id;
-                    // item.id 在收藏夹 API 中可能不是 answer_id，尝试多个候选
-                    const aidCandidates = [item.id, item.answer_id, item.content_id,
-                        item.question?.answer?.id, item.target?.id,
-                        typeof item.url === 'string' && item.url.match(/\/answer\/(\d+)/)?.[1]];
-                    for (const aid of [...new Set(aidCandidates.filter(Boolean))]) {
-                        const r = await fetch(`/api/v4/questions/${qid}/answers/${aid}?include=content`);
-                        if (r.ok) {
-                            const d = await r.json();
-                            if (d && d.content && typeof d.content === 'string' && d.content.length > 100) {
-                                item.content = d.content;
-                                fetched = true;
-                                break;
-                            }
+            // ---- 优先从 URL 提取 ID（最可靠） ----
+            const { qid, aid, articleId } = this.extractIdsFromUrl(item);
+
+            // ---- 回答：用导出回答的同款 API ----
+            const realQid = qid || item.question?.id;
+            const realAid = aid || item.id;
+            if (realQid && realAid) {
+                try {
+                    const r = await fetch(`/api/v4/questions/${realQid}/answers/${realAid}?include=content`);
+                    if (r.ok) {
+                        const d = await r.json();
+                        if (d && typeof d.content === 'string' && d.content.length > 200) {
+                            item.content = d.content;
+                            return;
                         }
-                        await Util.sleep(CONFIG.apiDelay);
                     }
-                    if (fetched) return;
-                }
+                } catch { /* 静默 */ }
+                await Util.sleep(200);
+            }
 
-                // ---- 专栏/文章 ----
-                if (type === 'article' || type === 'post' || (item.url && (item.url.includes('/p/') || item.url.includes('zhuanlan')))) {
-                    const idCandidates = [item.id, item.content_id,
-                        typeof item.url === 'string' && item.url.match(/\/p\/(\d+)/)?.[1]];
-                    for (const id of [...new Set(idCandidates.filter(Boolean))]) {
-                        const r = await fetch(`/api/v4/articles/${id}?include=content`);
-                        if (r.ok) {
-                            const d = await r.json();
-                            if (d && d.content && typeof d.content === 'string' && d.content.length > 100) {
-                                item.content = d.content;
-                                if (!item.title && d.title) item.title = d.title;
-                                fetched = true;
-                                break;
-                            }
+            // ---- 专栏文章 ----
+            if (articleId || item.id) {
+                const id = articleId || item.id;
+                try {
+                    const r = await fetch(`/api/v4/articles/${id}?include=content`);
+                    if (r.ok) {
+                        const d = await r.json();
+                        if (d && typeof d.content === 'string' && d.content.length > 200) {
+                            item.content = d.content;
+                            if (!item.title && d.title) item.title = d.title;
+                            return;
                         }
-                        await Util.sleep(CONFIG.apiDelay);
                     }
-                    if (fetched) return;
-                }
+                } catch { /* 静默 */ }
+                await Util.sleep(200);
+            }
 
-                // ---- 最后手段：直接抓取页面提取正文 ----
-                if (!fetched && item.url) {
+            // ---- 最后手段：直接抓取页面 ----
+            if (item.url) {
+                try {
                     const url = item.url.startsWith('http') ? item.url : 'https://www.zhihu.com' + item.url;
                     const r = await fetch(url, { headers: { 'Accept': 'text/html' } });
                     if (r.ok) {
                         const html = await r.text();
                         const doc = new DOMParser().parseFromString(html, 'text/html');
                         const el = doc.querySelector('.RichText, .Post-RichText, .AnswerCard .RichText, .ContentItem-content');
-                        if (el && el.innerHTML.trim().length > 100) {
+                        if (el && el.innerHTML.trim().length > 200) {
                             item.content = el.innerHTML;
                         }
                     }
-                }
-            } catch { /* 静默失败，后续使用已有内容或占位符 */ }
+                } catch { /* 静默 */ }
+            }
         },
 
         favTitle(item) {
