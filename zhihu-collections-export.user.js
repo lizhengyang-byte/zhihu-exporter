@@ -7,6 +7,7 @@
 // @license      MIT
 // @match        https://www.zhihu.com/people/*
 // @icon         https://static.zhihu.com/heifetz/favicon.ico
+// @require      https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js
 // @grant        none
 // ==/UserScript==
 
@@ -17,7 +18,6 @@
     const CONFIG = {
         apiDelay: 350,          // API 请求间隔 (ms)
         apiConcurrency: 3,      // 并发 API 请求数
-        downloadConcurrency: 6, // 并行下载数
         linkStyle: 'obsidian',  // 'obsidian' | 'standard'
         addFrontmatter: true,
     };
@@ -292,6 +292,24 @@
             linkDiv.appendChild(obsidianW);
             linkDiv.appendChild(stdW);
             optionsDiv.appendChild(linkDiv);
+
+            // ZIP 打包下载
+            const zipDiv = document.createElement('div');
+            Object.assign(zipDiv.style, { marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #f0f0f0' });
+            const zipLabel = document.createElement('label');
+            Object.assign(zipLabel.style, { display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: '#333' });
+            const zipCb = document.createElement('input');
+            zipCb.type = 'checkbox'; zipCb.id = 'fav-use-zip'; zipCb.checked = true;
+            Object.assign(zipCb.style, { width: '15px', height: '15px', accentColor: '#E67E22' });
+            zipLabel.appendChild(zipCb);
+            zipLabel.appendChild(document.createTextNode('打包为 ZIP 下载（更快，仅一个文件）'));
+            zipDiv.appendChild(zipLabel);
+            // 提示文字
+            const zipHint = document.createElement('div');
+            zipHint.textContent = '勾选后所有 Markdown 文件打包成一个 ZIP，大幅提升下载速度';
+            Object.assign(zipHint.style, { fontSize: '11px', color: '#bbb', marginTop: '4px', marginLeft: '21px' });
+            zipDiv.appendChild(zipHint);
+            optionsDiv.appendChild(zipDiv);
             body.appendChild(optionsDiv);
 
             // 收藏夹列表标题栏
@@ -544,40 +562,61 @@
 
                 if (this.aborted) { this.setProgress(0, '导出已取消', ''); this.resetUI(2000); return; }
 
-                // ---- 第四步：并行下载 ----
-                this.setProgress(18, '正在并行下载...', '0 / ' + files.length);
+                // ---- 第四步：下载 ----
+                const useZip = document.getElementById('fav-use-zip')?.checked;
 
-                const dlQueue = [...files];
-                let dlCompleted = 0;
-                const dlWorkers = [];
+                if (useZip) {
+                    // ZIP 模式：打包成一个文件，秒级完成
+                    this.setProgress(18, '正在打包 ZIP ...', '');
+                    try {
+                        await this.downloadAsZip(files);
+                        this.stats.success = files.length;
+                        this.setProgress(100, '✅ 导出完成！',
+                            'ZIP 包共 ' + files.length + ' 个文件');
+                    } catch (e) {
+                        console.error('ZIP 打包失败:', e);
+                        this.setProgress(0, '❌ ZIP 打包失败: ' + e.message, '');
+                    }
+                } else {
+                    // 独立文件模式：串行快速触发，避免浏览器下载管理器拥堵
+                    this.setProgress(18, '正在快速下载...', '0 / ' + files.length);
 
-                for (let i = 0; i < Math.min(CONFIG.downloadConcurrency, dlQueue.length); i++) {
-                    dlWorkers.push((async () => {
-                        while (dlQueue.length > 0 && !this.aborted) {
-                            const file = dlQueue.shift();
-                            try {
-                                this.downloadFile(file.content, file.filename);
-                                this.stats.success++;
-                            } catch (e) {
-                                console.error('下载失败:', file.filename, e);
-                                this.stats.fail++;
-                            }
-                            dlCompleted++;
-                            const pct = 18 + (dlCompleted / files.length) * 80;
-                            this.setProgress(
-                                Math.min(pct, 100).toFixed(1),
-                                '正在下载...',
-                                dlCompleted + ' / ' + files.length
-                            );
-                            // 浏览器对同时触发的下载有限制，错开触发
-                            await this.sleep(300);
+                    const total = files.length;
+                    // 预先创建所有 Blob URL，减少后续延迟
+                    const blobs = files.map(f => ({
+                        filename: f.filename,
+                        url: URL.createObjectURL(new Blob([f.content], { type: 'text/markdown;charset=utf-8' }))
+                    }));
+
+                    for (let i = 0; i < blobs.length && !this.aborted; i++) {
+                        const { filename, url } = blobs[i];
+                        try {
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = filename;
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                            this.stats.success++;
+                        } catch (e) {
+                            console.error('下载失败:', filename, e);
+                            this.stats.fail++;
                         }
-                    })());
-                }
-                await Promise.all(dlWorkers);
+                        // 极短间隔：仅防浏览器批量丢弃，不影响总耗时
+                        if (i % 5 === 4) await this.sleep(100);
+                        const pct = 18 + ((i + 1) / total) * 80;
+                        this.setProgress(
+                            Math.min(pct, 100).toFixed(1),
+                            '正在下载...',
+                            (i + 1) + ' / ' + total
+                        );
+                    }
+                    // 延迟释放 Blob URL
+                    setTimeout(() => blobs.forEach(b => URL.revokeObjectURL(b.url)), 30000);
 
-                this.setProgress(100, '✅ 导出完成！',
-                    '成功: ' + this.stats.success + ' | 失败: ' + this.stats.fail + ' | 共: ' + files.length + ' 项');
+                    this.setProgress(100, '✅ 导出完成！',
+                        '成功: ' + this.stats.success + ' | 失败: ' + this.stats.fail + ' | 共: ' + total + ' 项');
+                }
 
             } catch (err) {
                 console.error('导出失败:', err);
@@ -840,17 +879,24 @@
             return filename;
         },
 
-        // ==================== 下载文件 ====================
-        downloadFile: function(content, filename) {
-            const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+        // ==================== ZIP 打包下载 ====================
+        downloadAsZip: async function(files) {
+            const JSZip = window.JSZip;
+            if (!JSZip) throw new Error('JSZip 库未加载');
+
+            const zip = new JSZip();
+            for (const f of files) {
+                zip.file(f.filename, f.content);
+            }
+
+            const blob = await zip.generateAsync({ type: 'blob' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = filename;
+            a.download = '知乎收藏夹导出_' + new Date().toISOString().slice(0, 10) + '.zip';
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
-            // 延迟释放 URL 以避免浏览器尚未开始下载
             setTimeout(() => URL.revokeObjectURL(url), 10000);
         },
 
