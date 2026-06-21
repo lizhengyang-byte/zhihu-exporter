@@ -64,6 +64,22 @@
             return href;
         },
 
+        /** 将内容统一为字符串（处理数组型 content，如想法中的多段内容） */
+        contentString: content => {
+            if (!content) return '';
+            if (typeof content === 'string') return content;
+            if (Array.isArray(content)) {
+                return content.map(b => {
+                    if (b.type === 'text') return b.content || b.own_text || '';
+                    if (b.type === 'image') return '<img src="' + (b.url || b.original_url || '') + '">';
+                    if (b.type === 'video') return '[视频]';
+                    if (b.type === 'link') return '<a href="' + (b.url || '') + '">' + (b.title || '链接') + '</a>';
+                    return '';
+                }).join('\n\n');
+            }
+            return String(content);
+        },
+
         // ========== HTML → Markdown ==========
         html2md: function(html) {
             if (!html) return '';
@@ -850,7 +866,7 @@
                 this.setProg(5, '正在补全文章内容...', '');
 
                 // ---- 第二步：补全缺少内容的项 ----
-                const needContent = allItems.filter(e => !e.item.content || e.item.content.trim().length < 50);
+                const needContent = allItems.filter(e => !e.item.content || (typeof e.item.content === 'string' && e.item.content.trim().length < 50));
                 if (needContent.length) {
                     const cq = [...needContent];
                     let cfetched = 0;
@@ -980,7 +996,7 @@
             let meta = '> ';
             if (author) meta += '**作者**: ' + author + ' · ';
             meta += '📅 ' + created + ' · 👍 ' + votes + ' · 💬 ' + comments;
-            L.push(meta, '> **来源**: [' + (title.length > 50 ? title.substring(0, 50) + '…' : title) + '](' + url + ')', '> **收藏夹**: ' + entry.collectionTitle, '', '---', '', Util.html2md(item.content || '*（内容为空）*'), '', '---', '> 由知乎收藏夹导出工具生成 · [查看原文](' + url + ')');
+            L.push(meta, '> **来源**: [' + (title.length > 50 ? title.substring(0, 50) + '…' : title) + '](' + url + ')', '> **收藏夹**: ' + entry.collectionTitle, '', '---', '', Util.html2md(Util.contentString(item.content) || '*（内容为空）*'), '', '---', '> 由知乎收藏夹导出工具生成 · [查看原文](' + url + ')');
             return L.join('\n');
         },
 
