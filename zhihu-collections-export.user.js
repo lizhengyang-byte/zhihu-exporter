@@ -200,8 +200,28 @@
         },
 
         // ==================== 获取收藏夹列表 ====================
+        // 探测收藏夹 API 路径（不同用户/页面可能不同）
+        probeApiBase: async function() {
+            const candidates = [
+                '/api/v4/people/' + this.urlToken + '/collections',
+                '/api/v4/members/' + this.urlToken + '/collections',
+            ];
+            for (const url of candidates) {
+                try {
+                    const probe = await fetch(url + '?limit=1&offset=0');
+                    if (probe.ok) return url;
+                    // 403 = 存在但无权限, 也视为路径正确
+                    if (probe.status === 403) return url;
+                } catch (e) { /* 忽略网络错误，继续尝试下一个 */ }
+            }
+            return null;
+        },
+
         fetchCollections: async function() {
             try {
+                const apiBase = await this.probeApiBase();
+                if (!apiBase) throw new Error('未找到收藏夹 API 路径');
+
                 const collections = [];
                 let offset = 0;
                 const limit = 20;
@@ -212,7 +232,7 @@
                         limit: String(limit),
                         offset: String(offset)
                     });
-                    const resp = await fetch('/api/v4/members/' + this.urlToken + '/collections?' + params.toString());
+                    const resp = await fetch(apiBase + '?' + params.toString());
                     if (!resp.ok) throw new Error('获取收藏夹失败: ' + resp.status);
                     const data = await resp.json();
                     if (!data.data || data.data.length === 0) break;

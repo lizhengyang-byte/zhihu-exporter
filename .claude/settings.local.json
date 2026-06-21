@@ -7,7 +7,8 @@
       "Bash(git commit -m 'Initial commit: Zhihu content exporter scripts *)",
       "Bash(gh repo *)",
       "Bash(git commit -m 'Optimize download performance: ZIP batch mode + streamlined individual mode *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(git commit -m 'Fix 404 on collections API endpoint *)"
     ]
   }
 }
