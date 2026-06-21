@@ -8,7 +8,9 @@
       "Bash(gh repo *)",
       "Bash(git commit -m 'Optimize download performance: ZIP batch mode + streamlined individual mode *)",
       "Bash(git push *)",
-      "Bash(git commit -m 'Fix 404 on collections API endpoint *)"
+      "Bash(git commit -m 'Fix 404 on collections API endpoint *)",
+      "Bash(node --check main.js)",
+      "Bash(git commit -m 'Merge two scripts into one unified exporter with tabbed UI *)"
     ]
   }
 }
