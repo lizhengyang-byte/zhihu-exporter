@@ -862,6 +862,17 @@
                 await Promise.all(workers);
                 if (this.aborted) { this.setProg(0, '已取消'); this.showProg(false); return; }
 
+                // ---- 调试：打印第一个条目的原始结构（看 API 实际返回什么） ----
+                if (allItems.length > 0) {
+                    console.log('[zhihu-exporter] 收藏夹 API 返回的首个条目结构（用于调试）:',
+                        JSON.stringify(allItems[0].item, (k, v) => k === 'content' ? '(content length=' + (typeof v === 'string' ? v.length : typeof v) + ')' : v, 2));
+                    // 如果 content 为空/非字符串，额外提示
+                    const c = allItems[0].item.content;
+                    if (!c || typeof c !== 'string' || c.trim().length < 50) {
+                        console.warn('[zhihu-exporter] ⚠️ content 字段缺失或过短，将尝试从独立 API 补全');
+                    }
+                }
+
                 const total = allItems.length;
                 this.setProg(5, '正在补全文章内容...', '');
 
@@ -955,28 +966,82 @@
 
         async fetchItemFullContent(entry) {
             const item = entry.item;
+            if (!item) return;
             const type = item.type || '';
             try {
-                if ((type === 'answer' || !type) && item.id && item.question?.id) {
-                    const r = await fetch('/api/v4/questions/' + item.question.id + '/answers/' + item.id + '?include=content');
-                    if (r.ok) { const d = await r.json(); if (d.content) item.content = d.content; }
-                    return;
+                let fetched = false;
+
+                // ---- 回答：尝试多个可能的 ID 字段 ----
+                if ((type === 'answer' || !type) && item.question?.id) {
+                    const qid = item.question.id;
+                    // item.id 在收藏夹 API 中可能不是 answer_id，尝试多个候选
+                    const aidCandidates = [item.id, item.answer_id, item.content_id,
+                        item.question?.answer?.id, item.target?.id,
+                        typeof item.url === 'string' && item.url.match(/\/answer\/(\d+)/)?.[1]];
+                    for (const aid of [...new Set(aidCandidates.filter(Boolean))]) {
+                        const r = await fetch(`/api/v4/questions/${qid}/answers/${aid}?include=content`);
+                        if (r.ok) {
+                            const d = await r.json();
+                            if (d && d.content && typeof d.content === 'string' && d.content.length > 100) {
+                                item.content = d.content;
+                                fetched = true;
+                                break;
+                            }
+                        }
+                        await Util.sleep(CONFIG.apiDelay);
+                    }
+                    if (fetched) return;
                 }
-                if (type === 'article' || type === 'post' || item.url?.startsWith('/p/')) {
-                    let id = item.id;
-                    if (!id && item.url) { const m = item.url.match(/\/p\/(\d+)/); if (m) id = m[1]; }
-                    if (id) {
-                        const r = await fetch('/api/v4/articles/' + id + '?include=content');
-                        if (r.ok) { const d = await r.json(); if (d.content) { item.content = d.content; if (!item.title) item.title = d.title; } }
+
+                // ---- 专栏/文章 ----
+                if (type === 'article' || type === 'post' || (item.url && (item.url.includes('/p/') || item.url.includes('zhuanlan')))) {
+                    const idCandidates = [item.id, item.content_id,
+                        typeof item.url === 'string' && item.url.match(/\/p\/(\d+)/)?.[1]];
+                    for (const id of [...new Set(idCandidates.filter(Boolean))]) {
+                        const r = await fetch(`/api/v4/articles/${id}?include=content`);
+                        if (r.ok) {
+                            const d = await r.json();
+                            if (d && d.content && typeof d.content === 'string' && d.content.length > 100) {
+                                item.content = d.content;
+                                if (!item.title && d.title) item.title = d.title;
+                                fetched = true;
+                                break;
+                            }
+                        }
+                        await Util.sleep(CONFIG.apiDelay);
+                    }
+                    if (fetched) return;
+                }
+
+                // ---- 最后手段：直接抓取页面提取正文 ----
+                if (!fetched && item.url) {
+                    const url = item.url.startsWith('http') ? item.url : 'https://www.zhihu.com' + item.url;
+                    const r = await fetch(url, { headers: { 'Accept': 'text/html' } });
+                    if (r.ok) {
+                        const html = await r.text();
+                        const doc = new DOMParser().parseFromString(html, 'text/html');
+                        const el = doc.querySelector('.RichText, .Post-RichText, .AnswerCard .RichText, .ContentItem-content');
+                        if (el && el.innerHTML.trim().length > 100) {
+                            item.content = el.innerHTML;
+                        }
                     }
                 }
-            } catch { /* ignore */ }
+            } catch { /* 静默失败，后续使用已有内容或占位符 */ }
         },
 
         favTitle(item) {
             if (item.question?.title) return item.question.title;
             if (item.title) return item.title;
-            return '知乎内容 ' + (item.id || '');
+            // 尝试从 content 中提取 h1
+            if (item.content) {
+                const str = typeof item.content === 'string' ? item.content : JSON.stringify(item.content);
+                const m = str.match(/<h1[^>]*>(.*?)<\/h1>/i);
+                if (m) return m[1].replace(/<[^>]*>/g, '').trim();
+                // 尝试从 content 取前 40 字作为标题
+                const text = str.replace(/<[^>]*>/g, '').trim();
+                if (text.length > 10) return text.substring(0, 40) + (text.length > 40 ? '…' : '');
+            }
+            return '知乎内容_' + (item.id || item.content_id || Date.now());
         },
 
         favItemToMD(entry) {
